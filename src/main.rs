@@ -1,4 +1,4 @@
-use tokio::net::{TcpListener, TcpStream, tcp::{ReadHalf, WriteHalf}};
+use tokio::{io::{AsyncReadExt, AsyncWriteExt, ReadHalf, WriteHalf}, net::{TcpListener, TcpStream}};
 use crate::errors::ConnectionPoolerError;
 
 mod errors;
@@ -24,8 +24,8 @@ async fn handle_client(client_stream: TcpStream) -> Result<(), ConnectionPoolerE
     let (mut client_reader, mut client_writer) = tokio::io::split(client_stream);
     let (mut backend_reader, mut backend_writer) = tokio::io::split(backend_stream);
 
-    let client_to_backend = tokio::io::copy(&mut client_reader, &mut backend_writer);
-    let backend_to_client = tokio::io::copy(&mut backend_reader, &mut client_writer);
+    let client_to_backend = forward_traffic(&mut client_reader, &mut backend_writer);
+    let backend_to_client = forward_traffic(&mut backend_reader, &mut client_writer);
 
     let (client_result, backend_result) = tokio::join!(client_to_backend, backend_to_client);
 
@@ -41,5 +41,14 @@ async fn handle_client(client_stream: TcpStream) -> Result<(), ConnectionPoolerE
 }
 
 async fn forward_traffic(reader: &mut ReadHalf<TcpStream>, writer: &mut WriteHalf<TcpStream>) -> Result<(), ConnectionPoolerError> {
-    Ok(tokio::io::copy(reader, writer).await?)
+    //tokio::io::copy(reader, writer).await?;
+    loop {
+        let mut buffer = [0; 1024];
+        let n = reader.read(&mut buffer).await?;
+        if n == 0 {
+            break;
+        }
+        writer.write_all(&buffer[..n]).await?;
+    }
+    Ok(())
 }
