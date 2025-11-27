@@ -1,9 +1,10 @@
-use tokio::net::{TcpListener, TcpStream};
+use tokio::net::{TcpListener, TcpStream, tcp::{ReadHalf, WriteHalf}};
+use crate::errors::ConnectionPoolerError;
 
-mod postgres;
+mod errors;
 
 #[tokio::main]
-async fn main() -> Result<(), Box<dyn std::error::Error>> {
+async fn main() -> Result<(), ConnectionPoolerError> {
     let listener = TcpListener::bind("127.0.0.1:6432").await?;
 
     loop {
@@ -17,11 +18,11 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     }
 }
 
-async fn handle_client(client_stream: TcpStream) -> Result<(), Box<dyn std::error::Error>>{
-    let mut pg_connection = postgres::connect_to_postgres().await?;
+async fn handle_client(client_stream: TcpStream) -> Result<(), ConnectionPoolerError>{
+    let backend_stream = TcpStream::connect("127.0.0.1:5432").await?;
 
     let (mut client_reader, mut client_writer) = tokio::io::split(client_stream);
-    let (mut backend_reader, mut backend_writer) = tokio::io::split(pg_connection.stream);
+    let (mut backend_reader, mut backend_writer) = tokio::io::split(backend_stream);
 
     let client_to_backend = tokio::io::copy(&mut client_reader, &mut backend_writer);
     let backend_to_client = tokio::io::copy(&mut backend_reader, &mut client_writer);
@@ -34,11 +35,11 @@ async fn handle_client(client_stream: TcpStream) -> Result<(), Box<dyn std::erro
 
     if let Err(e) = backend_result {
         eprintln!("Error forwarding backend->client: {}", e);
-        pg_connection.state = postgres::ConnectionState::Broken;
     }
 
-    pg_connection.stream = backend_reader.unsplit(backend_writer);
-    postgres::release_connection(pg_connection).await;
-
     Ok(())
+}
+
+async fn forward_traffic(reader: &mut ReadHalf<TcpStream>, writer: &mut WriteHalf<TcpStream>) -> Result<(), ConnectionPoolerError> {
+    Ok(tokio::io::copy(reader, writer).await?)
 }
